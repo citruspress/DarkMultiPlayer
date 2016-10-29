@@ -212,6 +212,7 @@ namespace DarkMultiPlayer
         private void RegisterGameHooks()
         {
             registered = true;
+            GameEvents.onNewVesselCreated.Add(OnNewVesselCreated);
             GameEvents.onVesselRecovered.Add(this.OnVesselRecovered);
             GameEvents.onVesselTerminated.Add(this.OnVesselTerminated);
             GameEvents.onVesselDestroy.Add(this.OnVesselDestroyed);
@@ -222,6 +223,7 @@ namespace DarkMultiPlayer
         private void UnregisterGameHooks()
         {
             registered = false;
+            GameEvents.onNewVesselCreated.Remove(OnNewVesselCreated);
             GameEvents.onVesselRecovered.Remove(this.OnVesselRecovered);
             GameEvents.onVesselTerminated.Remove(this.OnVesselTerminated);
             GameEvents.onVesselDestroy.Remove(this.OnVesselDestroyed);
@@ -875,7 +877,7 @@ namespace DarkMultiPlayer
             vesselPartsOk[checkVessel.id] = (bannedParts.Count == 0);
         }
 
-        private void SendVesselUpdateIfNeeded(Vessel checkVessel)
+        public void SendVesselUpdateIfNeeded(Vessel checkVessel)
         {
             //Check vessel parts
             if (ModWorker.fetch.modControl != ModControlMode.DISABLED)
@@ -907,18 +909,20 @@ namespace DarkMultiPlayer
             if (!LockSystem.fetch.LockExists("update-" + checkVessel.id.ToString()))
             {
                 LockSystem.fetch.ThrottledAcquireLock("update-" + checkVessel.id.ToString());
-                //Wait until we have the update lock
-                return;
             }
 
-            //Take the update lock off another player if we have the control lock and it's our vessel
-            if (checkVessel.id == FlightGlobals.fetch.activeVessel.id)
+            // Check if it isn't null before fetching it
+            if (FlightGlobals.fetch.activeVessel != null)
             {
-                if (LockSystem.fetch.LockExists("update-" + checkVessel.id.ToString()) && !LockSystem.fetch.LockIsOurs("update-" + checkVessel.id.ToString()) && LockSystem.fetch.LockIsOurs("control-" + checkVessel.id.ToString()))
+                //Take the update lock off another player if we have the control lock and it's our vessel
+                if (checkVessel.id == FlightGlobals.fetch.activeVessel.id)
                 {
-                    LockSystem.fetch.ThrottledAcquireLock("update-" + checkVessel.id.ToString());
-                    //Wait until we have the update lock
-                    return;
+                    if (LockSystem.fetch.LockExists("update-" + checkVessel.id.ToString()) && !LockSystem.fetch.LockIsOurs("update-" + checkVessel.id.ToString()) && LockSystem.fetch.LockIsOurs("control-" + checkVessel.id.ToString()))
+                    {
+                        LockSystem.fetch.ThrottledAcquireLock("update-" + checkVessel.id.ToString());
+                        //Wait until we have the update lock
+                        return;
+                    }
                 }
             }
 
@@ -973,14 +977,14 @@ namespace DarkMultiPlayer
 
         public void SendKerbalIfDifferent(ProtoCrewMember pcm)
         {
-            if (pcm.type == ProtoCrewMember.KerbalType.Tourist)
-            {
-                //Don't send tourists
-                DarkLog.Debug("Skipping sending of tourist: " + pcm.name);
-                return;
-            }
             ConfigNode kerbalNode = new ConfigNode();
             pcm.Save(kerbalNode);
+            if (pcm.type == ProtoCrewMember.KerbalType.Tourist)
+            {
+                ConfigNode dmpNode = new ConfigNode();
+                dmpNode.AddValue("touristOwner", Settings.fetch.playerPublicKey);
+                kerbalNode.AddNode("DarkMultiPlayer", dmpNode);
+            }
             byte[] kerbalBytes = ConfigNodeSerializer.fetch.Serialize(kerbalNode);
             if (kerbalBytes == null || kerbalBytes.Length == 0)
             {
@@ -1006,7 +1010,6 @@ namespace DarkMultiPlayer
                 NetworkWorker.fetch.SendKerbalProtoMessage(pcm.name, kerbalBytes);
             }
         }
-
         //Also called from PlayerStatusWorker
         public bool isSpectating
         {
@@ -1082,12 +1085,11 @@ namespace DarkMultiPlayer
             Vector3d protoVesselPosition = kerbinBody.GetWorldSurfacePosition(protovessel.latitude, protovessel.longitude, protovessel.altitude);
             return isInSafetyBubble(protoVesselPosition, kerbinBody);
         }
-            
         //Called from main
         public void LoadKerbalsIntoGame()
         {
             DarkLog.Debug("Loading kerbals into game");
-            MethodInfo addMemberToCrewRosterMethod = typeof(KerbalRoster).GetMethod("AddCrewMember", BindingFlags.NonPublic | BindingFlags.Instance);
+            MethodInfo addMemberToCrewRosterMethod = typeof(KerbalRoster).GetMethod("AddCrewMember", BindingFlags.Public | BindingFlags.Instance);
             AddCrewMemberToRoster = (AddCrewMemberToRosterDelegate)Delegate.CreateDelegate(typeof(AddCrewMemberToRosterDelegate), HighLogic.CurrentGame.CrewRoster, addMemberToCrewRosterMethod);
             if (AddCrewMemberToRoster == null)
             {
@@ -1106,11 +1108,7 @@ namespace DarkMultiPlayer
             if (serverKerbals.Count == 0)
             {
                 KerbalRoster newRoster = KerbalRoster.GenerateInitialCrewRoster(HighLogic.CurrentGame.Mode);
-                foreach (ProtoCrewMember pcm in newRoster.Crew)
-                {
-                    AddCrewMemberToRoster(pcm);
-                    SendKerbalIfDifferent(pcm);
-                }
+                foreach (ProtoCrewMember pcm in newRoster.Crew) SendKerbalIfDifferent(pcm);
             }
 
             int generateKerbals = 0;
@@ -1136,18 +1134,35 @@ namespace DarkMultiPlayer
                 DarkLog.Debug("crewNode is null!");
                 return;
             }
+
+            if (crewNode.GetValue("type") == "Tourist")
+            {
+                ConfigNode dmpNode = null;
+                if (crewNode.TryGetNode("DarkMultiPlayer", ref dmpNode))
+                {
+                    string dmpOwner = null;
+                    if (dmpNode.TryGetValue("touristOwner", ref dmpOwner))
+                    {
+                        if (dmpOwner != Settings.fetch.playerPublicKey)
+                        {
+                            DarkLog.Debug("Skipping load of tourist that belongs to another player");
+                            return;
+                        }
+                    }
+                }
+            }
+
             ProtoCrewMember protoCrew = new ProtoCrewMember(HighLogic.CurrentGame.Mode, crewNode);
             if (protoCrew == null)
             {
                 DarkLog.Debug("protoCrew is null!");
                 return;
             }
-            if (String.IsNullOrEmpty(protoCrew.name))
+            if (string.IsNullOrEmpty(protoCrew.name))
             {
                 DarkLog.Debug("protoName is blank!");
                 return;
             }
-            protoCrew.type = ProtoCrewMember.KerbalType.Crew;
             if (!HighLogic.CurrentGame.CrewRoster.Exists(protoCrew.name))
             {
                 AddCrewMemberToRoster(protoCrew);
@@ -1177,49 +1192,73 @@ namespace DarkMultiPlayer
                 if (flightLogNode != null)
                 {
                     //And here. Someone "cannot into" lists and how to protect them.
-                    HighLogic.CurrentGame.CrewRoster[protoCrew.name].careerLog.Entries.Clear();
-                    HighLogic.CurrentGame.CrewRoster[protoCrew.name].careerLog.Load(careerLogNode);
+                    HighLogic.CurrentGame.CrewRoster[protoCrew.name].flightLog.Entries.Clear();
+                    HighLogic.CurrentGame.CrewRoster[protoCrew.name].flightLog.Load(flightLogNode);
                 }
+
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].courage = protoCrew.courage;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].experience = protoCrew.experience;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].experienceLevel = protoCrew.experienceLevel;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].experienceTrait = protoCrew.experienceTrait;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].gender = protoCrew.gender;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].gExperienced = protoCrew.gExperienced;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].hasToured = protoCrew.hasToured;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].isBadass = protoCrew.isBadass;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].KerbalRef = protoCrew.KerbalRef;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].outDueToG = protoCrew.outDueToG;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].rosterStatus = protoCrew.rosterStatus;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].seat = protoCrew.seat;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].seatIdx = protoCrew.seatIdx;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].stupidity = protoCrew.stupidity;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].trait = protoCrew.trait;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].type = protoCrew.type;
                 HighLogic.CurrentGame.CrewRoster[protoCrew.name].UTaR = protoCrew.UTaR;
+                HighLogic.CurrentGame.CrewRoster[protoCrew.name].veteran = protoCrew.veteran;
             }
         }
         //Called from main
         public void LoadVesselsIntoGame()
         {
-            DarkLog.Debug("Loading vessels into game");
-            int numberOfLoads = 0;
-
-            foreach (KeyValuePair<Guid, Queue<VesselProtoUpdate>> vesselQueue in vesselProtoQueue)
+            lock (updateQueueLock)
             {
-                while (vesselQueue.Value.Count > 0)
+                DarkLog.Debug("Loading vessels into game");
+                int numberOfLoads = 0;
+
+                foreach (KeyValuePair<Guid, Queue<VesselProtoUpdate>> vesselQueue in vesselProtoQueue)
                 {
-                    VesselProtoUpdate vpu = vesselQueue.Value.Dequeue();
-                    ProtoVessel pv = CreateSafeProtoVesselFromConfigNode(vpu.vesselNode, vpu.vesselID);
-                    if (pv != null && pv.vesselID == vpu.vesselID)
+                    while (vesselQueue.Value.Count > 0)
                     {
-                        RegisterServerVessel(pv.vesselID);
-                        RegisterServerAsteriodIfVesselIsAsteroid(pv);
-                        HighLogic.CurrentGame.flightState.protoVessels.Add(pv);
-                        numberOfLoads++;
-                    }
-                    else
-                    {
-                        DarkLog.Debug("WARNING: Protovessel " + vpu.vesselID + " is DAMAGED!. Skipping load.");
-                        ChatWorker.fetch.PMMessageServer("WARNING: Protovessel " + vpu.vesselID + " is DAMAGED!. Skipping load.");
+                        VesselProtoUpdate vpu = vesselQueue.Value.Dequeue();
+                        ConfigNode dmpNode = null;
+                        if (vpu.vesselNode.TryGetNode("DarkMultiPlayer", ref dmpNode))
+                        {
+                            string contractOwner = null;
+                            if (dmpNode.TryGetValue("contractOwner", ref contractOwner))
+                            {
+                                if (contractOwner != Settings.fetch.playerPublicKey)
+                                {
+                                    DarkLog.Debug("Skipping load of contract vessel that belongs to another player");
+                                    continue;
+                                }
+                            }                                
+                        }
+                        ProtoVessel pv = CreateSafeProtoVesselFromConfigNode(vpu.vesselNode, vpu.vesselID);
+                        if (pv != null && pv.vesselID == vpu.vesselID)
+                        {
+                            RegisterServerVessel(pv.vesselID);
+                            RegisterServerAsteriodIfVesselIsAsteroid(pv);
+                            HighLogic.CurrentGame.flightState.protoVessels.Add(pv);
+                            numberOfLoads++;
+                        }
+                        else
+                        {
+                            DarkLog.Debug("WARNING: Protovessel " + vpu.vesselID + " is DAMAGED!. Skipping load.");
+                            ChatWorker.fetch.PMMessageServer("WARNING: Protovessel " + vpu.vesselID + " is DAMAGED!. Skipping load.");
+                        }
                     }
                 }
+                DarkLog.Debug("Vessels (" + numberOfLoads + ") loaded into game");
             }
-            DarkLog.Debug("Vessels (" + numberOfLoads + ") loaded into game");
         }
         //Also called from QuickSaveLoader
         public void LoadVessel(ConfigNode vesselNode, Guid protovesselID, bool ignoreFlyingKill)
@@ -1642,7 +1681,16 @@ namespace DarkMultiPlayer
             NetworkWorker.fetch.SendVesselRemove(dyingVesselID, false);
         }
 
-        public void OnVesselRecovered(ProtoVessel recoveredVessel)
+        private void OnNewVesselCreated(Vessel data)
+        {
+            if (!AsteroidWorker.fetch.VesselIsAsteroid(data) && data.DiscoveryInfo.Level != DiscoveryLevels.Owned)
+            {
+                SendVesselUpdateIfNeeded(data);
+            }
+        }
+
+        //TODO: I don't know what this bool does?
+        public void OnVesselRecovered(ProtoVessel recoveredVessel, bool something)
         {
             Guid recoveredVesselID = recoveredVessel.vesselID;
 
@@ -1763,6 +1811,7 @@ namespace DarkMultiPlayer
         {
             return latestVesselUpdate.ContainsKey(vesselID) ? ((latestVesselUpdate[vesselID] - 3f) > Planetarium.GetUniversalTime()) : false;
         }
+
         public void OnVesselDock(GameEvents.FromToAction<Part, Part> partAction)
         {
             DarkLog.Debug("Vessel docking detected!");
@@ -1805,8 +1854,6 @@ namespace DarkMultiPlayer
                 DarkLog.Debug("Spectator docking happened. This needs to be fixed later.");
             }
         }
-
-
 
         private void OnCrewBoard(GameEvents.FromToAction<Part, Part> partAction)
         {
@@ -1920,7 +1967,6 @@ namespace DarkMultiPlayer
                 }
             }
         }
-
         //Called from networkWorker
         public void QueueKerbal(double planetTime, string kerbalName, ConfigNode kerbalNode)
         {
@@ -1983,7 +2029,6 @@ namespace DarkMultiPlayer
                 kerbalProtoHistoryTime[kerbalName] = planetTime;
             }
         }
-
         //Called from networkWorker
         public void QueueVesselRemove(Guid vesselID, double planetTime, bool isDockingUpdate, string dockingPlayer)
         {

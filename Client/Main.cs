@@ -377,10 +377,13 @@ namespace DarkMultiPlayer
                     //handle use of cheats
                     if (!serverAllowCheats)
                     {
-                        CheatOptions.InfiniteFuel = false;
-                        CheatOptions.InfiniteEVAFuel = false;
-                        CheatOptions.InfiniteRCS = false;
+                        CheatOptions.InfinitePropellant = false;
                         CheatOptions.NoCrashDamage = false;
+                        CheatOptions.IgnoreAgencyMindsetOnContracts = false;
+                        CheatOptions.IgnoreMaxTemperature = false;
+                        CheatOptions.InfiniteElectricity = false;
+                        CheatOptions.NoCrashDamage = false;
+                        CheatOptions.UnbreakableJoints = false;
 
                         foreach (KeyValuePair<CelestialBody, double> gravityEntry in bodiesGees)
                         {
@@ -624,6 +627,10 @@ namespace DarkMultiPlayer
 
             //Flightstate is null on new Game();
             returnGame.flightState = new FlightState();
+            if (returnGame.flightState.mapViewFilterState == 0)
+            {
+                returnGame.flightState.mapViewFilterState = -1026;
+            }
 
             //DMP stuff
             returnGame.startScene = GameScenes.SPACECENTER;

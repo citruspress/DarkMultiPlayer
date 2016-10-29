@@ -38,14 +38,34 @@ namespace DarkMultiPlayerServer.Messages
                     mw.Write<bool>(GameplaySettings.settingsStore.missingCrewsRespawn);
                     mw.Write<float>(GameplaySettings.settingsStore.reentryHeatScale);
                     mw.Write<float>(GameplaySettings.settingsStore.resourceAbundance);
+                    mw.Write<bool>(GameplaySettings.settingsStore.canQuickLoad);
                     mw.Write<float>(GameplaySettings.settingsStore.fundsGainMultiplier);
                     mw.Write<float>(GameplaySettings.settingsStore.fundsLossMultiplier);
                     mw.Write<float>(GameplaySettings.settingsStore.repGainMultiplier);
                     mw.Write<float>(GameplaySettings.settingsStore.repLossMultiplier);
+                    mw.Write<float>(GameplaySettings.settingsStore.repLossDeclined);
                     mw.Write<float>(GameplaySettings.settingsStore.scienceGainMultiplier);
                     mw.Write<float>(GameplaySettings.settingsStore.startingFunds);
                     mw.Write<float>(GameplaySettings.settingsStore.startingReputation);
                     mw.Write<float>(GameplaySettings.settingsStore.startingScience);
+                    //New KSP 1.2 Settings
+                    mw.Write<float>(GameplaySettings.settingsStore.respawnTime);
+                    mw.Write<bool>(GameplaySettings.settingsStore.commNetwork);
+                    mw.Write<bool>(GameplaySettings.settingsStore.kerbalExp);
+                    mw.Write<bool>(GameplaySettings.settingsStore.immediateLevelUp);
+                    mw.Write<bool>(GameplaySettings.settingsStore.allowNegativeCurrency);
+                    mw.Write<bool>(GameplaySettings.settingsStore.obeyCrossfeedRules);
+                    mw.Write<float>(GameplaySettings.settingsStore.buildingDamageMultiplier);
+                    mw.Write<bool>(GameplaySettings.settingsStore.partUpgrades);
+                    mw.Write<bool>(GameplaySettings.settingsStore.partPressureFail);
+                    mw.Write<float>(GameplaySettings.settingsStore.kerbalGToleranceMultiplier);
+                    mw.Write<bool>(GameplaySettings.settingsStore.requireSignalForControl);
+                    mw.Write<bool>(GameplaySettings.settingsStore.plasmaBlackout);
+                    mw.Write<float>(GameplaySettings.settingsStore.rangeModifier);
+                    mw.Write<float>(GameplaySettings.settingsStore.dsnModifier);
+                    mw.Write<float>(GameplaySettings.settingsStore.occlusionModifierVac);
+                    mw.Write<float>(GameplaySettings.settingsStore.occlusionModifierAtm);
+                    mw.Write<bool>(GameplaySettings.settingsStore.extraGroundstations);
                 }
                 newMessage.data = mw.GetMessageBytes();
             }

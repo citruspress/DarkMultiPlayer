@@ -4,6 +4,7 @@ using System.IO;
 using UnityEngine;
 using DarkMultiPlayerCommon;
 using System.Reflection;
+using Contracts;
 
 namespace DarkMultiPlayer
 {
@@ -20,6 +21,8 @@ namespace DarkMultiPlayer
         private Dictionary<string, Type> allScenarioTypesInAssemblies;
         //System.Reflection hackiness for loading kerbals into the crew roster:
         private delegate bool AddCrewMemberToRosterDelegate(ProtoCrewMember pcm);
+        // Game hooks
+        private bool registered;
 
         private AddCrewMemberToRosterDelegate AddCrewMemberToRoster;
 
@@ -31,15 +34,107 @@ namespace DarkMultiPlayer
             }
         }
 
+        private void RegisterGameHooks()
+        {
+            registered = true;
+            GameEvents.Contract.onAccepted.Add(OnContractAccepted);
+            GameEvents.Contract.onFailed.Add(OnContractFailOrComplete);
+            GameEvents.Contract.onCompleted.Add(OnContractFailOrComplete);
+        }
+
+        private void UnregisterGameHooks()
+        {
+            registered = false;
+            GameEvents.Contract.onAccepted.Remove(OnContractAccepted);
+            GameEvents.Contract.onFailed.Remove(OnContractFailOrComplete);
+            GameEvents.Contract.onCompleted.Remove(OnContractFailOrComplete);
+        }
+
+        private void OnContractAccepted(Contract contract)
+        {
+            DarkLog.Debug("Contract accepted, state: " + contract.ContractState);
+            ConfigNode contractNode = new ConfigNode();
+            contract.Save(contractNode);
+
+            if (contractNode.GetValue("type") == "RecoverAsset")
+            {
+                string kerbalName = contractNode.GetValue("kerbalName").Trim();
+                int kerbalGender = int.Parse(contractNode.GetValue("gender"));
+
+                if (!string.IsNullOrEmpty(kerbalName))
+                {
+                    ProtoCrewMember rescueKerbal = null;
+                    if (!HighLogic.CurrentGame.CrewRoster.Exists(kerbalName))
+                    {
+                        DarkLog.Debug("Generating missing kerbal " + kerbalName + " for rescue contract");
+
+                        rescueKerbal = HighLogic.CurrentGame.CrewRoster.GetNewKerbal(ProtoCrewMember.KerbalType.Unowned);
+                        rescueKerbal.ChangeName(kerbalName);
+                        rescueKerbal.gender = (ProtoCrewMember.Gender)kerbalGender;
+                        rescueKerbal.rosterStatus = ProtoCrewMember.RosterStatus.Assigned;
+                    }
+                    else
+                    {
+                        rescueKerbal = HighLogic.CurrentGame.CrewRoster[kerbalName];
+                        DarkLog.Debug("Kerbal " + kerbalName + " already exists, skipping respawn");
+                    }
+                    if (rescueKerbal != null)
+                    {
+                        HighLogic.CurrentGame.CrewRoster.ValidateAssignments(HighLogic.fetch.currentGame);
+                        VesselWorker.fetch.SendKerbalIfDifferent(rescueKerbal);
+                    }
+                }
+            }
+
+            else if (contractNode.GetValue("type") == "TourismContract")
+            {
+                string tourists = contractNode.GetValue("tourists");
+                if (tourists != null)
+                {
+                    string[] touristsNames = tourists.Split(new char[] { '|' });
+                    foreach (string touristName in touristsNames)
+                    {
+                        ProtoCrewMember pcm = null;
+                        if (!HighLogic.CurrentGame.CrewRoster.Exists(touristName))
+                        {
+                            DarkLog.Debug("Spawning missing tourist " + touristName + " for tourism contract");
+                            pcm = HighLogic.CurrentGame.CrewRoster.GetNewKerbal(ProtoCrewMember.KerbalType.Tourist);
+                            pcm.rosterStatus = ProtoCrewMember.RosterStatus.Available;
+                            pcm.ChangeName(touristName);
+                        }
+                        else
+                        {
+                            DarkLog.Debug("Skipped respawn of existing tourist " + touristName);
+                            pcm = HighLogic.CurrentGame.CrewRoster[touristName];
+                        }
+                        if (pcm != null) VesselWorker.fetch.SendKerbalIfDifferent(pcm);
+                    }
+                }
+            }
+        }
+
+        private void OnContractFailOrComplete(Contract contract)
+        {
+            DarkLog.Debug("Contract state: " + contract.ContractState);
+        }
+
         private void Update()
         {
-            if (workerEnabled && !blockScenarioDataSends)
+            if (workerEnabled)
             {
-                if ((UnityEngine.Time.realtimeSinceStartup - lastScenarioSendTime) > SEND_SCENARIO_DATA_INTERVAL)
+                if (!registered) RegisterGameHooks();
+                if (!blockScenarioDataSends)
                 {
-                    lastScenarioSendTime = UnityEngine.Time.realtimeSinceStartup;
-                    SendScenarioModules(false);
+                    if ((UnityEngine.Time.realtimeSinceStartup - lastScenarioSendTime) > SEND_SCENARIO_DATA_INTERVAL)
+                    {
+                        lastScenarioSendTime = UnityEngine.Time.realtimeSinceStartup;
+                        SendScenarioModules(false);
+                    }
                 }
+            }
+            else
+            {
+                if (registered) UnregisterGameHooks();
             }
         }
 
@@ -124,6 +219,7 @@ namespace DarkMultiPlayer
                 }
                 ConfigNode scenarioNode = new ConfigNode();
                 sm.Save(scenarioNode);
+
                 byte[] scenarioBytes = ConfigNodeSerializer.fetch.Serialize(scenarioNode);
                 string scenarioHash = Common.CalculateSHA256Hash(scenarioBytes);
                 if (scenarioBytes.Length == 0)
@@ -165,11 +261,6 @@ namespace DarkMultiPlayer
             while (scenarioQueue.Count > 0)
             {
                 ScenarioEntry scenarioEntry = scenarioQueue.Dequeue();
-                if (scenarioEntry.scenarioName == "ContractSystem")
-                {
-                    SpawnStrandedKerbalsForRescueMissions(scenarioEntry.scenarioNode);
-                    CreateMissingTourists(scenarioEntry.scenarioNode);
-                }
                 if (scenarioEntry.scenarioName == "ProgressTracking")
                 {
                     CreateMissingKerbalsInProgressTrackingSoTheGameDoesntBugOut(scenarioEntry.scenarioNode);
@@ -191,79 +282,25 @@ namespace DarkMultiPlayer
             }
         }
 
-        private void CreateMissingTourists(ConfigNode contractSystemNode)
+        private ConfigNode CreateProcessedPartNode(string part, uint id, params ProtoCrewMember[] crew)
         {
-            ConfigNode contractsNode = contractSystemNode.GetNode("CONTRACTS");
-            foreach (ConfigNode contractNode in contractsNode.GetNodes("CONTRACT"))
+            ConfigNode configNode = ProtoVessel.CreatePartNode(part, id, crew);
+            if (part != "kerbalEVA")
             {
-                if (contractNode.GetValue("type") == "TourismContract" && contractNode.GetValue("state") == "Active")
+                ConfigNode[] nodes = configNode.GetNodes("RESOURCE");
+                for (int i = 0; i < nodes.Length; i++)
                 {
-                    foreach (string kerbalName in contractNode.GetValues("kerbalName"))
+                    ConfigNode configNode2 = nodes[i];
+                    if (configNode2.HasValue("amount"))
                     {
-                        DarkLog.Debug("Spawning missing tourist (" + kerbalName + ") for active tourism contract");
-                        ProtoCrewMember pcm = HighLogic.CurrentGame.CrewRoster.GetNewKerbal(ProtoCrewMember.KerbalType.Tourist);
-                        pcm.name = kerbalName;
+                        configNode2.SetValue("amount", 0.ToString(System.Globalization.CultureInfo.InvariantCulture), false);
                     }
                 }
             }
+            configNode.SetValue("flag", "Squad/Flags/default", true);
+            return configNode;
         }
 
-        //Defends against bug #172
-        private void SpawnStrandedKerbalsForRescueMissions(ConfigNode contractSystemNode)
-        {
-            ConfigNode contractsNode = contractSystemNode.GetNode("CONTRACTS");
-            foreach (ConfigNode contractNode in contractsNode.GetNodes("CONTRACT"))
-            {
-                if ((contractNode.GetValue("type") == "RescueKerbal") && (contractNode.GetValue("state") == "Offered"))
-                {
-                    string kerbalName = contractNode.GetValue("kerbalName");
-                    if (!HighLogic.CurrentGame.CrewRoster.Exists(kerbalName))
-                    {
-                        DarkLog.Debug("Spawning missing kerbal (" + kerbalName + ") for offered KerbalRescue contract");
-                        ProtoCrewMember pcm = HighLogic.CurrentGame.CrewRoster.GetNewKerbal(ProtoCrewMember.KerbalType.Unowned);
-                        pcm.name = kerbalName;
-                    }
-                }
-                if ((contractNode.GetValue("type") == "RescueKerbal") && (contractNode.GetValue("state") == "Active"))
-                {
-
-                    string kerbalName = contractNode.GetValue("kerbalName");
-                    DarkLog.Debug("Spawning stranded kerbal (" + kerbalName + ") for active KerbalRescue contract");
-                    int bodyID = Int32.Parse(contractNode.GetValue("body"));
-                    if (!HighLogic.CurrentGame.CrewRoster.Exists(kerbalName))
-                    {
-                        GenerateStrandedKerbal(bodyID, kerbalName);
-                    }
-                }
-            }
-        }
-
-        private void GenerateStrandedKerbal(int bodyID, string kerbalName)
-        {
-            //Add kerbal to crew roster.
-            DarkLog.Debug("Spawning missing kerbal, name: " + kerbalName);
-            ProtoCrewMember pcm = HighLogic.CurrentGame.CrewRoster.GetNewKerbal(ProtoCrewMember.KerbalType.Unowned);
-            pcm.name = kerbalName;
-            pcm.rosterStatus = ProtoCrewMember.RosterStatus.Assigned;
-            //Create protovessel
-            uint newPartID = ShipConstruction.GetUniqueFlightID(HighLogic.CurrentGame.flightState);
-            CelestialBody contractBody = FlightGlobals.Bodies[bodyID];
-            //Atmo: 10km above atmo, to half the planets radius out.
-            //Non-atmo: 30km above ground, to half the planets radius out.
-            double minAltitude = FinePrint.Utilities.CelestialUtilities.GetMinimumOrbitalAltitude(contractBody, 1.1f);
-            double maxAltitude = minAltitude + contractBody.Radius * 0.5;
-            Orbit strandedOrbit = Orbit.CreateRandomOrbitAround(FlightGlobals.Bodies[bodyID], minAltitude, maxAltitude);
-            ConfigNode[] kerbalPartNode = new ConfigNode[1];
-            ProtoCrewMember[] partCrew = new ProtoCrewMember[1];
-            partCrew[0] = pcm;
-            kerbalPartNode[0] = ProtoVessel.CreatePartNode("kerbalEVA", newPartID, partCrew);
-            ConfigNode protoVesselNode = ProtoVessel.CreateVesselNode(kerbalName, VesselType.EVA, strandedOrbit, 0, kerbalPartNode);
-            ConfigNode discoveryNode = ProtoVessel.CreateDiscoveryNode(DiscoveryLevels.Unowned, UntrackedObjectClass.A, double.PositiveInfinity, double.PositiveInfinity);
-            ProtoVessel protoVessel = new ProtoVessel(protoVesselNode, HighLogic.CurrentGame);
-            protoVessel.discoveryInfo = discoveryNode;
-            //It's not supposed to be infinite, but you're crazy if you think I'm going to decipher the values field of the rescue node.
-            HighLogic.CurrentGame.flightState.protoVessels.Add(protoVessel);
-        }
         //Defends against bug #172
         private void CreateMissingKerbalsInProgressTrackingSoTheGameDoesntBugOut(ConfigNode progressTrackingNode)
         {
@@ -285,7 +322,7 @@ namespace DarkMultiPlayer
                         {
                             if (AddCrewMemberToRoster == null)
                             {
-                                MethodInfo addMemberToCrewRosterMethod = typeof(KerbalRoster).GetMethod("AddCrewMember", BindingFlags.NonPublic | BindingFlags.Instance);
+                                MethodInfo addMemberToCrewRosterMethod = typeof(KerbalRoster).GetMethod("AddCrewMember", BindingFlags.Public | BindingFlags.Instance);
                                 AddCrewMemberToRoster = (AddCrewMemberToRosterDelegate)Delegate.CreateDelegate(typeof(AddCrewMemberToRosterDelegate), HighLogic.CurrentGame.CrewRoster, addMemberToCrewRosterMethod);
                             }
                             if (AddCrewMemberToRoster == null)
@@ -294,7 +331,7 @@ namespace DarkMultiPlayer
                             }
                             DarkLog.Debug("Generating missing kerbal from ProgressTracking: " + kerbalName);
                             ProtoCrewMember pcm = CrewGenerator.RandomCrewMemberPrototype(ProtoCrewMember.KerbalType.Crew);
-                            pcm.name = kerbalName;
+                            pcm.ChangeName(kerbalName);
                             AddCrewMemberToRoster(pcm);
                             //Also send it off to the server
                             VesselWorker.fetch.SendKerbalIfDifferent(pcm);
@@ -415,7 +452,7 @@ namespace DarkMultiPlayer
             try
             {
                 HighLogic.CurrentGame.scenarios.Add(newModule);
-                newModule.Load(ScenarioRunner.fetch);
+                newModule.Load(ScenarioRunner.Instance);
             }
             catch
             {

@@ -17,11 +17,11 @@ namespace DarkMultiPlayerCommon
         //Split messages into 8kb chunks to higher priority messages have more injection points into the TCP stream.
         public const int SPLIT_MESSAGE_LENGTH = 8192;
         //Bump this every time there is a network change (Basically, if MessageWriter or MessageReader is touched).
-        public const int PROTOCOL_VERSION = 39;
+        public const int PROTOCOL_VERSION = 44;
         //Program version. This is written in the build scripts.
         public const string PROGRAM_VERSION = "Custom";
         //Mod control version - The last version to add parts
-        public const string MODCONTROL_VERSION = "1.0.5";
+        public const string MODCONTROL_VERSION = "1.2";
         //Compression threshold
         public const int COMPRESSION_THRESHOLD = 4096;
 
@@ -410,6 +410,20 @@ namespace DarkMultiPlayerCommon
             stockPartList.Add("RadialOreTank");
             stockPartList.Add("radPanelEdge");
             stockPartList.Add("mk3CargoRamp");
+			//1.1.0 parts
+			stockPartList.Add("InflatableHeatShield");
+			stockPartList.Add("HECS2.ProbeCore");
+			stockPartList.Add("HighGainAntenna");
+			stockPartList.Add("LgRadialSolarPanel");
+			stockPartList.Add("GearSmall");
+            // 1.2 parts
+            stockPartList.Add("ScienceBox");
+            stockPartList.Add("SurfAntenna");
+            stockPartList.Add("HighGainAntenna5");
+            stockPartList.Add("RelayAntenna100");
+            stockPartList.Add("RelayAntenna5");
+            stockPartList.Add("RelayAntenna50");
+            stockPartList.Add("HeatShield0");
             return stockPartList;
             //MAKE SURE TO CHANGE Common.MODCONTROL_VERSION
         }

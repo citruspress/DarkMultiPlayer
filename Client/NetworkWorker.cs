@@ -1064,6 +1064,8 @@ namespace DarkMultiPlayer
                 else
                 {
                     GameParameters newParameters = new GameParameters();
+                    GameParameters.AdvancedParams newAdvancedParameters = new GameParameters.AdvancedParams();
+                    CommNet.CommNetParams newCommNetParameters = new CommNet.CommNetParams();
                     newParameters.Difficulty.AllowStockVessels = mr.Read<bool>();
                     newParameters.Difficulty.AutoHireCrews = mr.Read<bool>();
                     newParameters.Difficulty.BypassEntryPurchaseAfterResearch = mr.Read<bool>();
@@ -1071,14 +1073,35 @@ namespace DarkMultiPlayer
                     newParameters.Difficulty.MissingCrewsRespawn = mr.Read<bool>();
                     newParameters.Difficulty.ReentryHeatScale = mr.Read<float>();
                     newParameters.Difficulty.ResourceAbundance = mr.Read<float>();
+                    newParameters.Flight.CanQuickLoad = newParameters.Flight.CanRestart = newParameters.Flight.CanLeaveToEditor = mr.Read<bool>();
                     newParameters.Career.FundsGainMultiplier = mr.Read<float>();
                     newParameters.Career.FundsLossMultiplier = mr.Read<float>();
                     newParameters.Career.RepGainMultiplier = mr.Read<float>();
                     newParameters.Career.RepLossMultiplier = mr.Read<float>();
+                    newParameters.Career.RepLossDeclined = mr.Read<float>();
                     newParameters.Career.ScienceGainMultiplier = mr.Read<float>();
                     newParameters.Career.StartingFunds = mr.Read<float>();
                     newParameters.Career.StartingReputation = mr.Read<float>();
                     newParameters.Career.StartingScience = mr.Read<float>();
+                    //New KSP 1.2 Settings
+                    newParameters.Difficulty.RespawnTimer = mr.Read<float>();
+                    newParameters.Difficulty.EnableCommNet = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().EnableKerbalExperience = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().ImmediateLevelUp = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().AllowNegativeCurrency = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().ResourceTransferObeyCrossfeed = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().BuildingImpactDamageMult = mr.Read<float>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().PartUpgradesInCareer = newParameters.CustomParams<GameParameters.AdvancedParams>().PartUpgradesInSandbox = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().PressurePartLimits = newParameters.CustomParams<GameParameters.AdvancedParams>().GPartLimits = newParameters.CustomParams<GameParameters.AdvancedParams>().GKerbalLimits = mr.Read<bool>();
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().KerbalGToleranceMult = mr.Read<float>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().requireSignalForControl = mr.Read<bool>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().plasmaBlackout = mr.Read<bool>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().rangeModifier = mr.Read<float>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().DSNModifier = mr.Read<float>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().occlusionMultiplierVac = mr.Read<float>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().occlusionMultiplierAtm = mr.Read<float>();
+                    newParameters.CustomParams<CommNet.CommNetParams>().enableGroundStations = mr.Read<bool>();
+
                     Client.fetch.serverParameters = newParameters;
                 }
             }
@@ -1753,18 +1776,31 @@ namespace DarkMultiPlayer
                 DarkLog.Debug("Vessel " + vessel.vesselID + " has NaN position");
                 return;
             }
+
+            bool isContractVessel = false;
             foreach (ProtoPartSnapshot pps in vessel.protoPartSnapshots)
             {
                 foreach (ProtoCrewMember pcm in pps.protoModuleCrew.ToArray())
                 {
                     if (pcm.type == ProtoCrewMember.KerbalType.Tourist)
                     {
-                        pps.protoModuleCrew.Remove(pcm);
+                        isContractVessel = true;
                     }
                 }
             }
+            if (!AsteroidWorker.fetch.VesselIsAsteroid(vessel) && (DiscoveryLevels)Int32.Parse(vessel.discoveryInfo.GetValue("state")) != DiscoveryLevels.Owned)
+            {
+                isContractVessel = true;
+            }
             ConfigNode vesselNode = new ConfigNode();
             vessel.Save(vesselNode);
+            if (isContractVessel)
+            {
+                ConfigNode dmpNode = new ConfigNode();
+                dmpNode.AddValue("contractOwner", Settings.fetch.playerPublicKey);
+                vesselNode.AddNode("DarkMultiPlayer", dmpNode);
+            }
+
             ClientMessage newMessage = new ClientMessage();
             newMessage.type = ClientMessageType.VESSEL_PROTO;
             byte[] vesselBytes = ConfigNodeSerializer.fetch.Serialize(vesselNode);
@@ -1842,7 +1878,7 @@ namespace DarkMultiPlayer
             QueueOutgoingMessage(newMessage, false);
         }
         //Called from vesselWorker
-        public void SendVesselRemove(Guid vesselID, bool isDockingUpdate)
+       public void SendVesselRemove(Guid vesselID, bool isDockingUpdate)
         {
             DarkLog.Debug("Removing " + vesselID + " from the server");
             ClientMessage newMessage = new ClientMessage();
